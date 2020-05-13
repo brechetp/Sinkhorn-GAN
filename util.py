@@ -5,6 +5,7 @@ import os
 import torch.utils.data as data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
+import torch
 
 from PIL import Image
 from os import listdir
@@ -71,7 +72,7 @@ def get_data(args, train_flag=True):
         transforms.CenterCrop(args.image_size),
         transforms.ToTensor(),
         transforms.Normalize(
-            (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            args.nc*(0.5,), args.nc* (0.5,)),
     ])
 
     if args.dataset in ['imagenet', 'folder', 'lfw']:
@@ -140,3 +141,8 @@ def match(x, y, dist):
         return 2 - (x_n).mul(y_n).mean()
     else:
         assert dist == 'none', 'wtf ?'
+
+def print_mem():
+    print("allocated: {}".format(torch.cuda.memory_allocated() / 1024**2))
+    print("cached: {}".format(torch.cuda.memory_cached() / 1024**2))
+

@@ -11,7 +11,7 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.utils.data
 import torchvision.utils as vutils
-from torch.autograd import Variable
+#from torch.autograd import Variable
 import torch.nn.functional as F
 import os
 import timeit
@@ -91,6 +91,7 @@ if torch.cuda.is_available():
 else:
     raise EnvironmentError("GPU device not available!")
 
+
 def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
 
     os.system('mkdir {0}_{1}_eps{2}_niter{3}_batch{4}'.format(args.experiment,loss,epsilon,niter_sink,batch_size))
@@ -101,6 +102,9 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
     torch.manual_seed(args.manual_seed)
     torch.cuda.manual_seed(args.manual_seed)
     cudnn.benchmark = True
+
+    dtype = torch.float
+    device = torch.device("cuda")
 
     # Get data
     trn_dataset = util.get_data(args, train_flag=True)
@@ -131,14 +135,14 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
     sigma_list = [sigma / base for sigma in sigma_list]
 
     # put variable into cuda device
-    fixed_noise = torch.cuda.FloatTensor(10**4, args.nz, 1, 1).normal_(0, 1)
-    one = torch.cuda.FloatTensor([1])
+    fixed_noise = torch.zeros((10**2, args.nz, 1, 1), device=device, dtype=dtype).normal_(0, 1)
+    noise = torch.zeros((batch_size, args.nz, 1, 1), device=device, dtype=dtype)
+    one = torch.tensor([1], device=device, dtype=dtype)
     mone = one * -1
-    if args.cuda:
-        netG.cuda()
-        netD.cuda()
-        one_sided.cuda()
-    fixed_noise = Variable(fixed_noise, requires_grad=False)
+    netG.to(device)
+    netD.to(device)
+    one_sided.to(device)
+    fixed_noise.requires_grad_(True)
 
     # setup optimizer
     optimizerG = torch.optim.RMSprop(netG.parameters(), lr=args.lr)
@@ -157,7 +161,7 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
             for p in netD.parameters():
                 p.requires_grad = True
 
-            
+
             if i == len(trn_loader):
                 break
 
@@ -170,15 +174,15 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
             i += 1
             netD.zero_grad()
 
-            x_cpu, _ = data
-            x = Variable(x_cpu.cuda())
+            x, _ = data
+            x = x.to(device)
             batch_size = x.size(0)
 
             f_enc_X_D, f_dec_X_D = netD(x)
 
-            noise = torch.cuda.FloatTensor(batch_size, args.nz, 1, 1).normal_(0, 1)
-            noise = Variable(noise, volatile=True)  # total freeze netG
-            y = Variable(netG(noise).data)
+            noise.normal_(0, 1)
+            with torch.no_grad():
+                y = netG(noise)
 
             f_enc_Y_D, f_dec_Y_D = netD(y)
 
@@ -187,22 +191,22 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
                 sink_D = 2*sinkhorn_loss_primal(f_enc_X_D, f_enc_Y_D, epsilon,batch_size,niter_sink) \
                         - sinkhorn_loss_primal(f_enc_Y_D, f_enc_Y_D, epsilon, batch_size,niter_sink) \
                         - sinkhorn_loss_primal(f_enc_X_D, f_enc_X_D, epsilon, batch_size,niter_sink)
-                errD = sink_D 
+                errD = sink_D
 
             elif loss == 'sinkhorn_dual' :
 
                 sink_D = 2*sinkhorn_loss_dual(f_enc_X_D, f_enc_Y_D, epsilon,batch_size,niter_sink) \
                         - sinkhorn_loss_dual(f_enc_Y_D, f_enc_Y_D, epsilon, batch_size,niter_sink) \
                         - sinkhorn_loss_dual(f_enc_X_D, f_enc_X_D, epsilon, batch_size,niter_sink)
-                errD = sink_D 
+                errD = sink_D
 
             else:
                 mmd2_D = mix_rbf_mmd2(f_enc_X_D, f_enc_Y_D, sigma_list)
                 mmd2_D = F.relu(mmd2_D)
-                errD = mmd2_D 
+                errD = mmd2_D
 
 
-            errD.backward(mone)
+            errD.unsqueeze(0).backward(mone)
             optimizerD.step()
 
             # ---------------------------
@@ -214,41 +218,40 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
 
             netG.zero_grad()
 
-            x_cpu, _ = data
-            x = Variable(x_cpu.cuda())
+            x, _ = data
+            x = x.to(device)
             batch_size = x.size(0)
 
             f_enc_X, f_dec_X = netD(x)
 
-            noise = torch.cuda.FloatTensor(batch_size, args.nz, 1, 1).normal_(0, 1)
-            noise = Variable(noise)
+            noise.normal_(0,1)
             y = netG(noise)
 
             f_enc_Y, f_dec_Y = netD(y)
 
-          
+
             ###### Sinkhorn loss #########
 
             if loss == 'sinkhorn_primal':
-            
+
                 sink_G = 2*sinkhorn_loss_primal(f_enc_X, f_enc_Y, epsilon,batch_size,niter_sink) \
                         - sinkhorn_loss_primal(f_enc_Y, f_enc_Y, epsilon, batch_size,niter_sink) \
                         - sinkhorn_loss_primal(f_enc_X, f_enc_X, epsilon, batch_size,niter_sink)
-                errG = sink_G 
+                errG = sink_G
 
             elif loss == 'sinkhorn_dual':
-            
+
                 sink_G = 2*sinkhorn_loss_dual(f_enc_X, f_enc_Y, epsilon,batch_size,niter_sink) \
                         - sinkhorn_loss_dual(f_enc_Y, f_enc_Y, epsilon, batch_size,niter_sink) \
                         - sinkhorn_loss_dual(f_enc_X, f_enc_X, epsilon, batch_size,niter_sink)
-                errG = sink_G 
+                errG = sink_G
 
             else :
                 mmd2_G = mix_rbf_mmd2(f_enc_X, f_enc_Y, sigma_list)
                 mmd2_G = F.relu(mmd2_G)
-                errG = mmd2_G 
+                errG = mmd2_G
 
-            errG.backward(one)
+            errG.unsqueeze(0).backward(one)
             optimizerG.step()
 
             gen_iterations += 1
@@ -257,11 +260,14 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
             	print('generator iterations ='+str(gen_iterations))
 
             if gen_iterations%500 == 1:
-            	y_fixed = netG(fixed_noise)
-            	y_fixed.data = y_fixed.data.mul(0.5).add(0.5)
-            	imgfilename = '{0}_{1}_eps{2}_niter{3}_batch{5}/imglist_{4}'.format(args.experiment,loss,epsilon,niter_sink,gen_iterations , batch_size)
-            	torch.save(y_fixed.data,imgfilename)
-            	print('images saved! generator iterations ='+str(gen_iterations))
+                util.print_mem()
+                with torch.no_grad():
+                    y_fixed = netG(fixed_noise)*0.5 + 0.5
+                    #y_fixed.data = y_fixed.data.mul(0.5).add(0.5)
+                    imgfilename = '{0}_{1}_eps{2}_niter{3}_batch{5}/imglist_{4}.jpg'.format(args.experiment,loss,epsilon,niter_sink,gen_iterations , batch_size)
+                    #torch.save(y_fixed.data,imgfilename)
+                    vutils.save_image(y_fixed,  imgfilename)
+                    print('images saved! generator iterations ='+str(gen_iterations))
 
             if gen_iterations>10**5:
             	print('done!')
@@ -270,7 +276,7 @@ def run_gan(args,loss, batch_size, epsilon = 1, niter_sink = 1):
         if gen_iterations>10**5:
         	print('done!')
         	break
-            
+
 
 ######################################################################################################
 ######################################################################################################
@@ -297,4 +303,4 @@ for batch_size in batch_size_list :
             exp_number +=1
             print('exp '+str(exp_number))
             run_gan(args,'sinkhorn_dual', batch_size, epsilon, niter_sink)
-            
+
